@@ -1,0 +1,108 @@
+#!/bin/sh
+
+RC=${HOME}/.${0##*/}rc
+CMD=help
+
+usage() {
+    echo "Available actions:"
+    echo ""
+    echo "* batt[ery]                 - Show battery status"
+    echo "* blue[tooth] [ on | off ]  - Turn Bluetooth on or off"
+    echo "* lock                      - Lock the phone"
+    echo "* call +1234567890          - Call a given number"
+    echo "* mute [ off ]              - Set phone mute or disable it"
+    echo "* rec[ord] filename.raw     - Record with mic"
+    echo "* shot filename.png         - Take a (screen)shot"
+    echo "* sms +1234567890 msg body  - Send a msg to given number"
+    echo "* use \$device_setup         - Set device to connect to."
+    echo "                              Should be an SSHable host ie. foo@bar"
+    echo "* which                     - List configured device"
+    echo "* wifi [ on | off ]         - Toggles WiFi"
+    echo ""
+}
+if [ -n "$1" ]
+then
+    CMD=$1
+    shift
+fi
+
+if [ -e "${RC}" ]
+then
+    . "${RC}"
+else
+    if [ "${CMD}" != "use" ]
+    then
+        echo "No device selected. Set one with *use* command:" 1>&2
+        echo ""
+        usage
+        exit 1
+    fi
+fi
+
+case ${CMD} in
+    batt*)
+        # FIXME broken in SFOS 2.x
+        ssh ${JOLLA} upower -d
+        ;;
+    blue*)
+        case $1 in
+            [Oo][Nn]) tostate=true ;;
+            *) tostate=false ;;
+        esac
+        ssh ${JOLLA} dbus-send --system --print-reply --dest=net.connman \
+            /net/connman/technology/bluetooth net.connman.Technology.SetProperty string:"Powered" variant:boolean:${tostate}
+        ;;
+    lock)
+        ssh ${JOLLA} dbus-send --system --type=method_call --dest=org.nemomobile.lipstick \
+            /devicelock org.nemomobile.lipstick.devicelock.setState int32:1
+        ssh ${JOLLA} dbus-send --system --dest=com.nokia.mce --print-reply --type="method_call" \
+            /com/nokia/mce/request com.nokia.mce.request.req_display_state_off
+        ;;
+    call)
+        PHONE=$1; shift
+        if echo ${PHONE} | grep -qv "[0-9][0-9]"
+        then
+            echo Please specify a number. 1>&2
+            exit 1
+        fi
+        ssh ${JOLLA} gdbus call -e -d com.jolla.voicecall.ui -o / -m com.jolla.voicecall.ui.dial "${PHONE}"
+        ;;
+    mute)
+        case $1 in
+            [Oo][Ff][Ff]) tostate=general ;;
+            *) tostate=silent ;;
+        esac
+        ssh ${JOLLA} dbus-send --type=method_call --dest=com.nokia.profiled \
+            /com/nokia/profiled com.nokia.profiled.set_profile string:"${tostate}"
+        ;;
+    rec* )
+        ssh ${JOLLA} echo "Recording... ^C to stop"
+        ssh ${JOLLA} parec $@
+        ;;
+    scrot | shot)
+        # Since this script relies on devmode installed, it's safe to assert grabscreen presence
+        ssh ${JOLLA} grabscreen $@
+        ;;
+    sms)
+        PHONE=$1; shift
+        ssh ${JOLLA} dbus-send --system --print-reply --dest=org.ofono \
+            /ril_0 org.ofono.MessageManager.SendMessage string:"${PHONE}" string:"$*"
+        ;;
+    use)
+        echo "JOLLA=$1" > "${RC}"
+        ;;
+    which)
+        [ -e "${RC}" ] && cut -d= -f2 "${RC}" || echo "Non configured" 1>&2
+        ;;
+    wifi)
+        case $1 in
+            [Oo][Ff][Ff]) tostate=false ;;
+            *) tostate=true ;;
+        esac
+        ssh ${JOLLA} dbus-send --system --print-reply --type=method_call \
+            --dest=net.connman /net/connman/technology/wifi \
+            net.connman.Technology.SetProperty string:Powered variant:boolean:${tostate}
+        ;;
+    *)
+        usage
+esac

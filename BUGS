@@ -1,0 +1,3 @@
+Battery action works only in SFOS 1.x
+Contact actions, sms and call work only with real numbers
+* That's in fact a UX bug since no one calls by no these days
